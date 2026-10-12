@@ -6,6 +6,11 @@
 This module contains small utilities for selecting FreeCAD objects referenced
 by expression items.
 
+When an expression item carries document information (cross-document scopes),
+the helper activates the referencing document — opening its file first when
+the reference was found in a closed document — and selects the object there.
+Otherwise it falls back to the active document, as before.
+
 The helper functions route FreeCAD/FreeCADGui access through `FreeCadPort` so
 they can be tested (or at least imported) outside FreeCAD.
 """
@@ -46,6 +51,41 @@ def _get_doc_and_object_internal_names(*, doc: object, obj: object) -> tuple[str
     return doc_name, obj_internal_name
 
 
+def _get_doc_for_item(
+    *, item: ExpressionItem, ctx: FreeCadContext | None
+) -> object | None:
+    """Return the document owning a cross-document expression item.
+
+    Opens the item's file when its document is closed.
+    """
+    port = get_port(ctx)
+    doc = port.get_open_document(item.doc_id or "")
+    if doc is None and item.doc_path:
+        doc = port.open_document_file(item.doc_path)
+    return doc
+
+
+def _select_doc_and_object(
+    *, doc: object, obj_name: str, ctx: FreeCadContext | None
+) -> None:
+    port = get_port(ctx)
+    actual_name = getattr(doc, "Name", None)
+    actual_name = actual_name if isinstance(actual_name, str) else ""
+    obj = port.get_object(doc, obj_name)
+    if obj is None or not actual_name:
+        port.warn(
+            port.translate("Log", f"Workbench MainPanel: cannot find object '{obj_name}'\n")
+        )
+        return
+    names = _get_doc_and_object_internal_names(doc=doc, obj=obj)
+    if names is None:
+        return
+    doc_name, obj_internal_name = names
+    port.try_set_active_document(doc_name)
+    port.clear_selection()
+    port.add_selection(doc_name=doc_name, obj_name=obj_internal_name)
+
+
 def select_object_from_expression_item(
     expression_item: ExpressionItem | str,
     *,
@@ -58,7 +98,8 @@ def select_object_from_expression_item(
     - its display string (e.g. ``"Object.Property = expr"``).
 
     This function resolves the owning object name and selects it in the model
-    tree.
+    tree. For cross-document items the referencing document is activated
+    first, and opened from disk when it is closed.
 
     Args:
         expression_item: Expression item object or expression display string.
@@ -67,7 +108,21 @@ def select_object_from_expression_item(
     if obj_name is None:
         return
 
-    port = get_port(ctx)
+    if isinstance(expression_item, ExpressionItem) and expression_item.doc_id:
+        port = get_port(ctx)
+        doc = _get_doc_for_item(item=expression_item, ctx=ctx)
+        if doc is None:
+            port.warn(
+                port.translate(
+                    "Log",
+                    f"Workbench MainPanel: cannot open document "
+                    f"'{expression_item.doc_path or expression_item.doc_id}'\n",
+                )
+            )
+            return
+        _select_doc_and_object(doc=doc, obj_name=obj_name, ctx=ctx)
+        return
+
     doc_and_obj = _get_active_doc_and_object(obj_name=obj_name, ctx=ctx)
     if doc_and_obj is None:
         return
@@ -78,5 +133,6 @@ def select_object_from_expression_item(
         return
 
     doc_name, obj_internal_name = names
+    port = get_port(ctx)
     port.clear_selection()
     port.add_selection(doc_name=doc_name, obj_name=obj_internal_name)

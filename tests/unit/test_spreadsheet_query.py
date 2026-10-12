@@ -1,86 +1,115 @@
-"""Unit tests for spreadsheet alias query helpers."""
+"""Unit tests for spreadsheet alias query helpers (cross-document aware)."""
 
 from __future__ import annotations
 
+from freecad.datamanager_wb.scanning import reference_match
 from freecad.datamanager_wb.spreadsheets import spreadsheet_query
+from fakes import FakeDocument, FakePort, FakeSheet
 
 
 def test_normalize_alias_map_inverts_when_keys_are_cells() -> None:
-    """_normalize_alias_map inverts a cell->alias mapping into alias->cell."""
+    """The re-exported alias-map normalizer inverts a cell->alias mapping."""
     raw = {"A1": "foo", "B2": "bar"}
     assert spreadsheet_query._normalize_alias_map(raw) == {"foo": "A1", "bar": "B2"}
 
 
 def test_normalize_alias_map_keeps_alias_to_cell_mapping() -> None:
-    """_normalize_alias_map preserves an alias->cell mapping."""
+    """The alias-map normalizer preserves an alias->cell mapping."""
     raw = {"foo": "A1", "bar": "B2"}
     assert spreadsheet_query._normalize_alias_map(raw) == raw
 
 
-def test_build_alias_search_regex_respects_word_boundaries() -> None:
-    """Alias matching treats alias tokens as word-boundary matches to avoid false positives."""
-    patterns, alias_re = spreadsheet_query._build_alias_search(
-        label_or_name="Sheet", alias_name="foo"
+def test_same_document_alias_patterns_respect_word_boundaries() -> None:
+    """Alias references must match whole identifiers, not prefixes."""
+    target = reference_match.ReferenceTarget(
+        doc_id="Doc", doc_label="Doc", object_name="Sheet", object_label="Sheet", child="foo"
     )
-    assert alias_re is not None
+    patterns = reference_match.same_document_patterns(target)
 
-    assert spreadsheet_query._matches_expression(
-        expr_text="foo + 1", patterns=patterns, alias_re=alias_re
+    assert any(p.search("Sheet.foo + 1") for p in patterns)
+    assert any(p.search("<<Sheet>>.foo") for p in patterns)
+    # "foobar" must not match the alias "foo" (right-hand identifier boundary)
+    assert not any(p.search("Sheet.foobar + 1") for p in patterns)
+    # a longer name with the same suffix still matches the substring token,
+    # mirroring the historical behavior of the single-document matcher
+    assert any(p.search("MySheet.foo") for p in patterns)
+
+
+def test_alias_word_boundary_only_applies_inside_the_owning_sheet() -> None:
+    """Bare alias names count only in the owning sheet's own entries."""
+    target = reference_match.ReferenceTarget(
+        doc_id="Doc", doc_label="Doc", object_name="Sheet", object_label="Sheet", child="foo"
     )
-    assert not spreadsheet_query._matches_expression(
-        expr_text="foobar + 1", patterns=patterns, alias_re=alias_re
+    internal = reference_match.internal_child_pattern(target)
+    assert internal is not None
+    assert internal.search("foo + 1")
+    assert not internal.search("foobar + 1")
+
+
+def _doc_with_params() -> FakeDocument:
+    params = FakeSheet("Params", aliases={"BoomSegments": "B1"}, cells={"B1": "BoomSegments"})
+    clone = FakeSheet("Params001", aliases={"BoomSegments": "B1"}, cells={"B1": "BoomSegments"})
+    from fakes import FakeObject
+
+    return FakeDocument(
+        "Doc",
+        objects=[
+            params,
+            clone,
+            FakeObject("LinearPattern", [("Occurrences", "<<Params>>.BoomSegments")]),
+            FakeObject("LinearPattern013", [("Occurrences", "<<Params001>>.BoomSegments")]),
+        ],
     )
 
 
 def test_get_spreadsheet_alias_references_does_not_match_other_spreadsheet_prefix(monkeypatch) -> None:
-    """getSpreadsheetAliasReferences should not match CopyOnChange clones like Params001 when querying Params."""
+    """Alias references to Params must not match clones like Params001."""
+    doc = _doc_with_params()
+    fake_port = FakePort(active=doc, open_docs=[doc])
+    monkeypatch.setattr(spreadsheet_query, "get_port", lambda _ctx=None: fake_port)
 
-    class _FakePort:
-        def __init__(self) -> None:
-            self._doc = object()
+    hits = spreadsheet_query.getSpreadsheetAliasReferences("Params", "BoomSegments")
+    # B1 is the alias definition cell (owner sheet -> internal match)
+    assert {(hit.doc_id, hit.lhs) for hit in hits} == {
+        ("Doc", "LinearPattern.Occurrences"),
+        ("Doc", "Params.B1"),
+    }
 
-        def get_active_document(self):
-            return self._doc
 
-        def get_typed_object(self, _doc, name: str, *, type_id: str):
-            _type_id = type_id
+def test_alias_reference_counts_include_other_open_documents(monkeypatch) -> None:
+    """A cross-document expression in another open document counts as a reference."""
+    owner = _doc_with_params()
 
-            class _Sheet:
-                def __init__(self, *, sheet_name: str) -> None:
-                    self.Name = sheet_name
-                    self.Label = sheet_name
+    from fakes import FakeObject
 
-            return _Sheet(sheet_name=name)
-
-    fake_port = _FakePort()
-
-    monkeypatch.setattr(
-        spreadsheet_query,
-        "get_port",
-        lambda _ctx=None: fake_port,
+    other = FakeDocument(
+        "Driver",
+        objects=[FakeObject("Box", [("Length", "Doc#Params.BoomSegments")])],
     )
-    monkeypatch.setattr(
-        spreadsheet_query,
-        "_get_active_spreadsheet",
-        lambda spreadsheet_name, *, ctx=None: fake_port.get_typed_object(
-            fake_port.get_active_document(), spreadsheet_name, type_id="Spreadsheet::Sheet"
-        ),
-    )
+    fake_port = FakePort(active=owner, open_docs=[owner, other])
+    monkeypatch.setattr(spreadsheet_query, "get_port", lambda _ctx=None: fake_port)
 
-    def _fake_iter_named_expression_engine_entries(_doc):
-        yield "LinearPattern", "Occurrences", "<<Params>>.BoomSegments"
-        yield "LinearPattern013", "Occurrences", "<<Params001>>.BoomSegments"
+    hits = spreadsheet_query.getSpreadsheetAliasReferences("Params", "BoomSegments")
+    assert ("Driver", "Box.Length") in {(hit.doc_id, hit.lhs) for hit in hits}
+    assert all(hit.owner_doc_id == "Doc" for hit in hits)
 
-    monkeypatch.setattr(
-        spreadsheet_query,
-        "iter_named_expression_engine_entries",
-        _fake_iter_named_expression_engine_entries,
-    )
-    monkeypatch.setattr(
-        spreadsheet_query,
-        "_add_internal_alias_refs",
-        lambda *, sheet, alias_re, results: None,
-    )
 
-    refs = spreadsheet_query.getSpreadsheetAliasReferences("Params", "BoomSegments")
-    assert list(refs.keys()) == ["LinearPattern.Occurrences"]
+def test_spreadsheets_listed_from_active_document_only(monkeypatch) -> None:
+    """Other open documents never add parent entries."""
+    doc_a = _doc_with_params()
+    doc_b = FakeDocument("Second", objects=[FakeSheet("Params")])
+    fake_port = FakePort(active=doc_a, open_docs=[doc_a, doc_b])
+    monkeypatch.setattr(spreadsheet_query, "get_port", lambda _ctx=None: fake_port)
+
+    names = list(spreadsheet_query.getSpreadsheets())
+    assert sorted(names) == ["Params", "Params001"]
+
+
+def test_get_spreadsheet_alias_names_for_active_sheet(monkeypatch) -> None:
+    """Alias names come from the sheet resolved against the active document."""
+    doc = _doc_with_params()
+    fake_port = FakePort(active=doc, open_docs=[doc])
+    monkeypatch.setattr(spreadsheet_query, "get_port", lambda _ctx=None: fake_port)
+
+    names = spreadsheet_query.getSpreadsheetAliasNames("Params")
+    assert names == ["BoomSegments"]

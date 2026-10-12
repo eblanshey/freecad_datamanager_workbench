@@ -6,6 +6,7 @@
 Contains operations that modify VarSets, such as removing a variable property.
 """
 
+from ..domain.qualified_parent import split_parent_name
 from ..ports.freecad_context import FreeCadContext
 from ..ports.freecad_port import get_port
 
@@ -31,22 +32,27 @@ def removeVarsetVariable(
     variable_name: str,
     *,
     ctx: FreeCadContext | None = None,
+    doc: object | None = None,
 ) -> bool:
     """Remove a variable/property from a VarSet.
 
     Args:
-        varset_name: Name of the `App::VarSet` object in the active document.
+        varset_name: Name of the `App::VarSet` object (a `Document#`-qualified
+            spec is accepted; the qualifier only selects the document).
         variable_name: Name of the property to remove.
+        doc: Optional document to operate on; defaults to the active document.
 
     Returns:
         ``True`` if the property was removed, otherwise ``False``.
     """
     port = get_port(ctx)
-    doc = port.get_active_document()
+    if doc is None:
+        doc = port.get_active_document()
     if doc is None:
         return False
 
-    varset = port.get_typed_object(doc, varset_name, type_id="App::VarSet")
+    _doc_id, bare_name = split_parent_name(varset_name)
+    varset = port.get_typed_object(doc, bare_name, type_id="App::VarSet")
     if varset is None:
         return False
 

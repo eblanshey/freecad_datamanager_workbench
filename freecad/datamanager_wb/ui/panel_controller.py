@@ -10,6 +10,7 @@ GUI refresh behavior.
 
 from ..domain.expression_item import ExpressionItem
 from ..domain.parent_child_ref import ParentChildRef
+from ..domain.qualified_parent import split_parent_name
 from ..domain.tab_controller import TabController
 from ..domain.tab_datasource import (
     PostRemoveUpdate,
@@ -18,8 +19,12 @@ from ..domain.tab_datasource import (
 )
 from ..ports.freecad_context import FreeCadContext, get_runtime_context
 from ..ports.freecad_port import FreeCadPort, get_port
+from ..scanning.scanner import DocumentScanner
+from ..scanning.scope import DocumentScope
 from ..spreadsheets.spreadsheet_datasource import SpreadsheetDataSource
+from ..spreadsheets.spreadsheet_query import find_sheet
 from ..varsets.varset_datasource import VarsetDataSource
+from ..varsets.varset_query import find_varset
 from .gui_selection import select_object_from_expression_item
 
 
@@ -30,13 +35,52 @@ class PanelController:
     - Provide a UI-oriented API for both tabs (VarSets and Aliases).
     - Delegate tab-generic operations to two `TabController` instances.
     - Own the document refresh boundary (`doc.recompute()` + `Gui.updateGui()`).
+    - Own the current :class:`DocumentScope` and the shared document scanner.
     """
 
     def __init__(self, *, ctx: FreeCadContext | None = None) -> None:
         self._ctx = ctx or get_runtime_context()
         self._port: FreeCadPort = get_port(self._ctx)
-        self._varsets_tab_controller = TabController(VarsetDataSource(ctx=self._ctx))
-        self._aliases_tab_controller = TabController(SpreadsheetDataSource(ctx=self._ctx))
+        self._scanner = DocumentScanner(self._port)
+        self._scope: DocumentScope = DocumentScope.empty()
+        self._varsets_tab_controller = TabController(
+            VarsetDataSource(
+                ctx=self._ctx, scope_provider=self.get_scope, scanner=self._scanner
+            )
+        )
+        self._aliases_tab_controller = TabController(
+            SpreadsheetDataSource(
+                ctx=self._ctx, scope_provider=self.get_scope, scanner=self._scanner
+            )
+        )
+
+    # -- document scope -------------------------------------------------------
+
+    def get_scope(self) -> DocumentScope:
+        """Return the current document scope."""
+        return self._scope
+
+    def set_scope(self, scope: DocumentScope) -> None:
+        """Update the document scope used by both tabs."""
+        self._scope = scope
+
+    @property
+    def scanner(self) -> DocumentScanner:
+        """Return the shared document scanner (closed-file cache)."""
+        return self._scanner
+
+    def list_open_document_names(self) -> list[str]:
+        """Return names of all loaded, non-temporary documents."""
+        names: list[str] = []
+        for doc in self._port.list_open_documents():
+            if getattr(doc, "Temporary", False):
+                continue
+            name = getattr(doc, "Name", None)
+            if isinstance(name, str) and name:
+                names.append(name)
+        return names
+
+    # -- document/label helpers -------------------------------------------------
 
     def refresh_document(self) -> None:
         """Recompute the active document and refresh the FreeCAD GUI.
@@ -55,7 +99,19 @@ class PanelController:
         return str(name) if name else None
 
     def get_object_label(self, object_name: str) -> str | None:
-        """Return the label for a named document object, if available."""
+        """Return the label for a named document object, if available.
+
+        Accepts document-qualified specs (``Document#Object``): for open
+        documents the live label is returned; for closed (scanned) documents
+        the label recorded in the saved file is used. The document part is
+        preserved in the returned string.
+        """
+        doc_id, bare_name = split_parent_name(object_name)
+        if doc_id is None:
+            return self._active_object_label(bare_name)
+        return self._qualified_object_label(doc_id, bare_name)
+
+    def _active_object_label(self, object_name: str) -> str | None:
         doc = self._port.get_active_document()
         if doc is None:
             return None
@@ -67,6 +123,38 @@ class PanelController:
         except Exception:  # pylint: disable=broad-exception-caught
             return None
         return text if text else None
+
+    def _qualified_object_label(self, doc_id: str, object_name: str) -> str | None:
+        label = self._live_object_label(doc_id, object_name)
+        if label is None:
+            label = self._scanned_object_label(doc_id, object_name)
+        if label is None:
+            return None
+        return f"{doc_id}#{label}"
+
+    def _live_object_label(self, doc_id: str, object_name: str) -> str | None:
+        doc = self._port.get_open_document(doc_id)
+        if doc is None:
+            return None
+        try:
+            obj = self._port.get_object(doc, object_name)
+            text = str(obj.Label)  # type: ignore[union-attr]
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+        return text if text else None
+
+    def _scanned_object_label(self, doc_id: str, object_name: str) -> str | None:
+        resolved = find_varset(
+            f"{doc_id}#{object_name}", ctx=self._ctx, scope=self._scope, scanner=self._scanner
+        )
+        if resolved is not None:
+            return resolved[1].label or None
+        resolved_sheet = find_sheet(
+            f"{doc_id}#{object_name}", ctx=self._ctx, scope=self._scope, scanner=self._scanner
+        )
+        if resolved_sheet is not None:
+            return resolved_sheet[1].label or None
+        return None
 
     def should_enable_remove_unused(self, *, only_unused: bool, selected_count: int) -> bool:
         """Delegate the enable/disable rule for remove-unused in the VarSets tab."""

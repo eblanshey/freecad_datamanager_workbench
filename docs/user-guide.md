@@ -322,6 +322,65 @@ Safety note:
 
 See the annotated screenshot above (8) for the button location (the Aliases tab uses the same control).
 
+## Cross-document references
+
+When you select a variable or alias, the Expressions list shows **every
+expression that uses it** — not only in the document you are working in:
+
+- the **active document** (owner-document hits, shown plain: `Pad.Length = …`),
+- **every other open document** (hidden/temporary documents are skipped),
+- the **project folder**: every `.FCStd` under the saved active document's
+  directory, recursively — same idea as fcxref scanning the current working
+  directory, but rooted at the document's own location, so no `cd` and no
+  picking needed (hidden folders like `.git` are skipped),
+- **closed `.FCStd` files** you register via **Add closed documents…** in the
+  toolbar row, for references living outside the project folder
+  (parsed from disk; never opened behind your back).
+
+The VarSets/Spreadsheets/variables/aliases lists always show the active
+document only; other documents contribute references, not list entries.
+
+### How closed documents are scanned
+
+Closed `.FCStd` files are parsed from disk (their saved `Document.xml`), so no
+documents are opened behind your back and the scan costs milliseconds. The
+consequences:
+
+- If a registered file is open, its live document wins; edits you have not
+  saved to *other* open documents are still seen, because those are scanned
+  live.
+- “Exclude Copy-on-Change” filtering applies to open documents only; closed
+  files cannot expose copy-on-change metadata.
+- Removing variables/aliases works only for documents that are actually
+  loaded. Unused variables in closed documents are reported, not deleted
+  (remove-unused also counts references found in other documents and closed
+  files, so nothing with an external usage gets deleted).
+
+### Cross-document display and matching
+
+Expression hits that live outside the owner document are rendered
+document-qualified — for example:
+
+- `Document2.Pad.Length = Document1#Varset.MyVar + 1` (name mode)
+- `My Assembly.Pad.Length = Power Drive#Varset.MyVar + 1` (label mode)
+
+Matching uses FreeCAD's external-reference syntax, so documents with
+colliding object names never mix:
+
+- `DocumentName#Params.height`
+- `<<Document Label>>#Params.height` / `"Document Label"#Params.height`
+
+References written inside the owning document keep the familiar forms
+(`Params.height`, `<<Parameters>>.height`, and bare sibling names inside a
+VarSet's own expressions). Clicking a reference that lives in a closed
+document opens that document and selects the referencing object.
+
+The closed-file list is persisted for the next session.
+
+> Developer QA: `scripts/crossdoc_integration_check.py` runs the whole flow
+> (create two documents with real cross-document expressions, save, close,
+> scan) inside a console-mode FreeCAD. See the file header for the invocation.
+
 ## Practical workflows
 
 ### Clean up unused items safely
@@ -354,8 +413,11 @@ Recommended steps:
 
 - If you have multiple FreeCAD documents open:
 
-  - The panel follows the **active document**. If you switch the active document in the model view, the workbench
-    refreshes to show VarSets/Aliases for that document.
+  - The panel follows the **active document** for the VarSets/Aliases lists;
+    switching the active document in the model view refreshes the lists.
+  - Reference finding always covers **all** open documents plus the closed
+    `.FCStd` files you registered (see “Cross-document references”); hits from
+    other documents appear document-qualified in the Expressions list.
 
 - If “Remove Selected Unused …” is disabled:
 

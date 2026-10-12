@@ -9,7 +9,7 @@ can be tested with a fake settings store.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from PySide import QtCore
@@ -41,7 +41,7 @@ class QtSettingsAdapter:
         """Return a stored value from Qt settings."""
 
         settings = self._get_settings()
-        return settings.value(key, default)
+        return cast("object | None", settings.value(key, default))
 
     def set_value(self, key: str, value: object) -> None:
         """Persist a value to Qt settings."""

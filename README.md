@@ -1,4 +1,8 @@
-# DataManager FreeCAD Workbench
+# DataManager FreeCAD Workbench - Forked
+
+**This is a fork from https://github.com/royw/freecad_datamanager_workbench. It is vibe-coded to add the following functionality:**
+
+- Show expressions from other documents, even if they are not currently open in FreeCAD
 
 [![Docs](https://github.com/royw/freecad_datamanager_workbench/actions/workflows/docs.yml/badge.svg)](https://github.com/royw/freecad_datamanager_workbench/actions/workflows/docs.yml)
 
@@ -96,7 +100,28 @@ Annotated UI legend:
   `Spreadsheet.A1 := 'MyAlias`).
 - The **Show Objects as: Name/Label** setting is independent from the VarSets tab and is persisted.
 
-### Multiple open documents
+### Cross-document references
 
-If you have multiple FreeCAD documents open, the panel follows the currently active document in the model view and
-refreshes the lists when you switch documents.
+Selecting a variable lists **every expression that uses it**, in the active
+document, in every other open document (hidden/temporary helper documents
+opened automatically by links are ignored), in the **project folder** (every
+`.FCStd` under the saved active document's directory, recursively), and in
+any additional closed `.FCStd` files you register via **Add closed
+documents…** in the toolbar row. The VarSets/Spreadsheets/variables lists
+always come from the active document only — other documents contribute
+references, not list entries.
+
+Closed documents are read directly from disk (the saved `Document.xml` inside
+the `.FCStd` archive), so references are found without opening them. Unsaved
+in-memory edits are of course not visible to the file scan; that is why the
+project folder is only picked up once the active document has been saved at
+least once.
+
+Expression entries that live in another document are shown
+document-qualified — for example `Document2.Pad.Length = Document#Varset.MyVar`
+— using FreeCAD's own external-reference syntax `Document#Object.Property` for
+matching, so objects with colliding names in different documents never mix.
+Clicking a reference that lives in a closed document opens it and selects the
+referencing object.
+
+The closed-file list is persisted between sessions.

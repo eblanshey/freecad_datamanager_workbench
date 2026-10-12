@@ -19,8 +19,10 @@ from ..ports.app_port import AppPort, FreeCadAppAdapter
 from ..ports.gui_port import FreeCadGuiAdapter, GuiPort
 from ..ports.settings_port import QtSettingsAdapter, SettingsPort
 from ..resources import UIPATH
+from ..scanning.scope import DocumentScope
 from .main_panel_presenter import MainPanelPresenter
 from .panel_controller import PanelController
+from .scope_dialog import ReferenceFilesDialog
 
 _SETTINGS_GROUP = "DataManager"
 _SETTINGS_APP = "DataManagerWorkbench"
@@ -28,6 +30,7 @@ _SETTING_VARSETS_OBJECT_DISPLAY_MODE = "varsets/object_display_mode"
 _SETTING_ALIASES_OBJECT_DISPLAY_MODE = "aliases/object_display_mode"
 _SETTING_VARSETS_SPLITTER_STATE = "varsets/splitter_state"
 _SETTING_ALIASES_SPLITTER_STATE = "aliases/splitter_state"
+_SETTING_REFERENCE_FILES = "scope/reference_files"
 _DISPLAY_MODE_NAME = "name"
 _DISPLAY_MODE_LABEL = "label"
 
@@ -76,6 +79,9 @@ class MainPanel(QtWidgets.QDialog):
         self._presenter = MainPanelPresenter(self._controller)
         self._copy_map: dict[QtWidgets.QListWidget, QtWidgets.QAbstractButton] = {}
         self._active_doc_name: str | None = None
+        self._open_doc_names: tuple[str, ...] = ()
+        self._scope = self._load_scope()
+        self._controller.set_scope(self._scope)
         self._active_doc_timer: QtCore.QTimer | None = None
 
         self.form = self._load_ui()
@@ -88,8 +94,34 @@ class MainPanel(QtWidgets.QDialog):
         self._connect_signals()
         self._start_active_document_watch()
 
+    # -- reference documents (closed-file search list) ---------------------------
+
+    def _load_scope(self) -> DocumentScope:
+        raw = self._settings_port.value(_SETTING_REFERENCE_FILES, "")
+        return DocumentScope.from_json(str(raw) if raw is not None else "")
+
+    def _persist_scope(self, scope: DocumentScope) -> None:
+        self._settings_port.set_value(_SETTING_REFERENCE_FILES, scope.to_json())
+
+    def _apply_scope(self, scope: DocumentScope) -> None:
+        self._scope = scope
+        self._controller.set_scope(scope)
+        self._persist_scope(scope)
+        self._refresh_for_active_document_change()
+
+    def _on_reference_files_clicked(self, _checked: bool = False) -> None:
+        dialog = ReferenceFilesDialog(
+            app_port=self._app_port,
+            files=list(self._scope.extra_files),
+            parent=self._widget if hasattr(self, "_widget") else None,
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        self._apply_scope(DocumentScope(extra_files=tuple(dialog.selected_files())))
+
     def _start_active_document_watch(self) -> None:
         self._active_doc_name = self._controller.get_active_document_name()
+        self._open_doc_names = tuple(sorted(self._controller.list_open_document_names()))
 
         timer = QtCore.QTimer(self)
         timer.setInterval(250)
@@ -106,12 +138,20 @@ class MainPanel(QtWidgets.QDialog):
 
     def _check_active_document_changed(self) -> None:
         name = self._controller.get_active_document_name()
+        open_docs = tuple(sorted(self._controller.list_open_document_names()))
+        documents_changed = open_docs != self._open_doc_names
+        self._open_doc_names = open_docs
+
         if name is None and self._active_doc_name is not None:
+            if documents_changed:
+                self._refresh_for_active_document_change()
             return
-        if name == self._active_doc_name:
+        if name != self._active_doc_name:
+            self._active_doc_name = name
+            self._refresh_for_active_document_change()
             return
-        self._active_doc_name = name
-        self._refresh_for_active_document_change()
+        if documents_changed:
+            self._refresh_for_active_document_change()
 
     def _clear_list_selection(self, widget: QtWidgets.QListWidget | None) -> None:
         if widget is None:
@@ -237,6 +277,11 @@ class MainPanel(QtWidgets.QDialog):
 
         self.varsetsSplitter = self._find_required_widget(QtWidgets.QSplitter, "splitter")
         self.aliasesSplitter = self._find_required_widget(QtWidgets.QSplitter, "aliases_splitter")
+
+        # Scope widgets are optional so the panel still loads with an older .ui.
+        assert self._widget is not None
+        finder = getattr(self._widget, "findChild")
+        self.referenceFilesPushButton = finder(QtWidgets.QPushButton, "referenceFilesPushButton")
 
         self.objectNameRadioButton = self._find_required_widget(
             QtWidgets.QRadioButton, "objectNameRadioButton"
@@ -629,6 +674,12 @@ class MainPanel(QtWidgets.QDialog):
 
     def _connect_signals(self) -> None:
         connections: list[tuple[object | None, Callable[[object], None]]] = [
+            (
+                self.referenceFilesPushButton,
+                lambda w: w.clicked.connect(
+                    lambda _checked=False: self._on_reference_files_clicked()
+                ),
+            ),
             (
                 self.availableVarsetsListWidget,
                 lambda w: (

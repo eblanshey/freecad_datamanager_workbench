@@ -155,17 +155,42 @@ class MainPanelPresenter:
         return f"{parent_label}.{child}"
 
     def format_expression_item(self, expression_item: object, *, use_label: bool) -> str:
-        """Format an `ExpressionItem`-like object for display."""
+        """Format an `ExpressionItem`-like object for display.
+
+        External hits (those carrying a `doc_id` different from the owner
+        document) render document-qualified: ``Document.Object.Property``.
+        """
         display_text = str(getattr(expression_item, "display_text", ""))
         parts = self._get_expression_item_parts(expression_item)
         if parts is None:
             return display_text
 
         lhs, rhs, operator, obj_name = parts
-        if not self._should_use_object_label(use_label, obj_name=obj_name):
-            return f"{lhs} {operator} {rhs}"
+        doc_id = self._get_str_attr(expression_item, "doc_id")
+        doc_label = self._get_str_attr(expression_item, "doc_label")
 
-        return self._format_expression_item_with_label(lhs, rhs, operator, obj_name)
+        if self._should_use_object_label(use_label, obj_name=obj_name):
+            lhs = self._localize_lhs(lhs, expression_item, obj_name or "")
+
+        if doc_id:
+            doc_token = (doc_label or doc_id) if use_label else doc_id
+            lhs = f"{doc_token}.{lhs}"
+
+        return f"{lhs} {operator} {rhs}"
+
+    def _get_str_attr(self, obj: object, name: str) -> str | None:
+        value = getattr(obj, name, None)
+        return value if isinstance(value, str) and value else None
+
+    def _localize_lhs(self, lhs: str, expression_item: object, obj_name: str) -> str:
+        """Replace the leading object token in `lhs` with its label."""
+        doc_id = self._get_str_attr(expression_item, "doc_id")
+        qualified = f"{doc_id}#{obj_name}" if doc_id else obj_name
+        obj_label = self._get_object_label(qualified)
+        obj_label = obj_label.rsplit("#", 1)[-1] if obj_label else ""
+        if not obj_label or not lhs.startswith(obj_name + "."):
+            return lhs
+        return self._replace_lhs_object_with_label(lhs, obj_label)
 
     def _get_expression_item_parts(
         self, expression_item: object

@@ -24,6 +24,18 @@ class FreeCadPort(Protocol):
     def get_active_document(self) -> object | None:
         """Return the active document, if any."""
 
+    def list_open_documents(self) -> list[object]:
+        """Return every loaded document (including hidden/temporary ones)."""
+
+    def get_open_document(self, doc_name: str) -> object | None:
+        """Return a loaded document by name, or None when not open."""
+
+    def open_document_file(self, path: str) -> object | None:
+        """Open a document file and return the opened document, or None."""
+
+    def try_set_active_document(self, doc_name: str) -> None:
+        """Activate a loaded document, swallowing errors."""
+
     def get_object(self, doc: object, name: str) -> object | None:
         """Return an object by name from the given document, if possible."""
 
@@ -73,6 +85,51 @@ class FreeCadContextAdapter:
         if doc is None:
             return None
         return doc
+
+    def list_open_documents(self) -> list[object]:
+        """Return every loaded document via `App.listDocuments()`."""
+        lister = getattr(self.ctx.app, "listDocuments", None)
+        if not callable(lister):
+            return []
+        try:
+            docs = lister()
+        except Exception:  # pylint: disable=broad-exception-caught
+            return []
+        if isinstance(docs, dict):
+            return [doc for doc in docs.values() if doc is not None]
+        if isinstance(docs, (list, tuple)):
+            return [doc for doc in docs if doc is not None]
+        return []
+
+    def get_open_document(self, doc_name: str) -> object | None:
+        """Return a loaded document by name, or None when not open."""
+        getter = getattr(self.ctx.app, "getDocument", None)
+        if not callable(getter):
+            return None
+        try:
+            return cast(object | None, getter(doc_name))
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+
+    def open_document_file(self, path: str) -> object | None:
+        """Open a `.FCStd` file and return the opened document, or None."""
+        opener = getattr(self.ctx.app, "openDocument", None)
+        if not callable(opener):
+            return None
+        try:
+            return cast(object | None, opener(path))
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+
+    def try_set_active_document(self, doc_name: str) -> None:
+        """Activate a loaded document, swallowing errors."""
+        setter = getattr(self.ctx.app, "setActiveDocument", None)
+        if not callable(setter):
+            return
+        try:
+            setter(doc_name)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
 
     def get_object(self, doc: object, name: str) -> object | None:
         """Return an object by name from the given document, if possible."""

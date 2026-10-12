@@ -9,6 +9,7 @@ alias definition.
 
 from collections.abc import Mapping
 
+from ..domain.qualified_parent import split_parent_name
 from ..ports.freecad_context import FreeCadContext
 from ..ports.freecad_port import get_port
 
@@ -62,12 +63,15 @@ def _try_get_spreadsheet(
     spreadsheet_name: str,
     *,
     ctx: FreeCadContext | None = None,
+    doc: object | None = None,
 ) -> object | None:
     port = get_port(ctx)
-    doc = port.get_active_document()
+    if doc is None:
+        doc = port.get_active_document()
     if doc is None:
         return None
-    return port.get_typed_object(doc, spreadsheet_name, type_id="Spreadsheet::Sheet")
+    _doc_id, bare_name = split_parent_name(spreadsheet_name)
+    return port.get_typed_object(doc, bare_name, type_id="Spreadsheet::Sheet")
 
 
 def _try_get_cell_from_alias(sheet: object, alias_name: str) -> str | None:
@@ -119,6 +123,7 @@ def removeSpreadsheetAlias(
     alias_name: str,
     *,
     ctx: FreeCadContext | None = None,
+    doc: object | None = None,
 ) -> bool:
     """Remove (clear) a spreadsheet alias definition.
 
@@ -131,13 +136,15 @@ def removeSpreadsheetAlias(
     - a local alias map extracted via `getAliases`/properties or `getAlias(cell)`
 
     Args:
-        spreadsheet_name: Name of the `Spreadsheet::Sheet` object.
+        spreadsheet_name: Name of the `Spreadsheet::Sheet` object (accepts a
+            `Document#`-qualified spec).
         alias_name: Alias to remove.
+        doc: Optional document to operate on; defaults to the active document.
 
     Returns:
         ``True`` if the alias was cleared, otherwise ``False``.
     """
-    sheet = _try_get_spreadsheet(spreadsheet_name, ctx=ctx)
+    sheet = _try_get_spreadsheet(spreadsheet_name, ctx=ctx, doc=doc)
     if sheet is None:
         return False
 

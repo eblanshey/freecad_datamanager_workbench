@@ -33,6 +33,19 @@ This document describes the current architecture of the **DataManager** FreeCAD 
     - `freecad/datamanager_wb/spreadsheets/spreadsheet_query.py`
     - `freecad/datamanager_wb/spreadsheets/spreadsheet_mutations.py`
     - `freecad/datamanager_wb/spreadsheets/spreadsheet_datasource.py` (adapts spreadsheet APIs to generic tab API)
+- **Cross-document scanning** (`freecad/datamanager_wb/scanning/`)
+  - `scope.py` — the reference-search scope (additional closed `.FCStd` files;
+    open documents are always searched)
+  - `fcstd_file.py` — pure-stdlib reader of closed `.FCStd` archives
+    (`Document.xml` via `zipfile` + `xml.etree`)
+  - `scanner.py` — resolves the search set into unified `ScanTarget`s (live
+    documents via the FreeCAD port; closed files via `fcstd_file`, including
+    the recursive project-folder glob of the saved active document), with an
+    mtime-keyed cache; `active_target()` serves the active-document-only
+    parent lists
+  - `reference_match.py` — identifier-boundary patterns for same-document
+    (`Object.Property`) and cross-document (`Document#Object.Property`) references
+  - `ui/scope_dialog.py` — closed-file picker dialog for the reference search
 - **Ports & adapters (FreeCAD/GUI boundaries)**
   - FreeCAD runtime:
     - `freecad/datamanager_wb/ports/freecad_context.py` (`FreeCadContext` + `get_runtime_context()`)

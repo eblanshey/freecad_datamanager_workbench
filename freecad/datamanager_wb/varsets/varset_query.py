@@ -3,277 +3,246 @@
 
 """Query helpers for FreeCAD VarSets.
 
-Provides functions to list varsets, list their variables, and find expression
-references to varset variables.
+Lists VarSets and their variables from the **active** document, and finds
+expression references to a variable across **all** documents in the reference
+search: every open document plus the closed ``.FCStd`` files of the
+:class:`~..scanning.scope.DocumentScope`.
+
+References from other documents use FreeCAD's cross-document syntax
+(``Document#VarSet.var`` and label spellings); references inside the owning
+document keep the familiar forms.
 """
 
-import re
+from __future__ import annotations
+
 from collections.abc import Iterator
 
-from ..freecad_helpers import (
-    build_expression_key,
-    get_copy_on_change_names,
-    get_object_name,
-    iter_document_objects,
-    iter_named_expression_engine_entries,
-)
+from ..domain.expression_entry import ExpressionEntry
+from ..domain.qualified_parent import split_parent_name
+from ..domain.reference_hit import SOURCE_FILE, SOURCE_OPEN, ReferenceHit
+from ..freecad_helpers import get_copy_on_change_names
 from ..ports.freecad_context import FreeCadContext
 from ..ports.freecad_port import get_port
+from ..scanning.reference_match import ReferenceTarget, entry_matches_target
+from ..scanning.scanner import DocumentScanner, ScanTarget, ScanVarSet
+from ..scanning.scope import DocumentScope
 
 
-def _iter_varset_names(doc: object) -> Iterator[str]:
-    for obj in _iter_varset_objects(doc):
-        name = get_object_name(obj)
-        if name is not None:
-            yield name
+def _scanner(
+    ctx: FreeCadContext | None, scanner: DocumentScanner | None
+) -> DocumentScanner:
+    return scanner or DocumentScanner(get_port(ctx))
 
 
-def _iter_filtered_varset_names(
+def _search_targets(
     *,
-    doc: object,
-    excluded: set[str],
-    exclude_copy_on_change: bool,
-) -> Iterator[str]:
-    for name in _iter_varset_names(doc):
-        if exclude_copy_on_change and name in excluded:
-            continue
-        yield name
-
-
-def _build_varset_search(
-    *,
-    varset_name: str,
-    variable_name: str | None,
-) -> tuple[list[str], re.Pattern[str] | None]:
-    patterns: list[str] = [f"<<{varset_name}>>"]
-    if not variable_name:
-        return patterns, None
-
-    patterns = [
-        f"<<{varset_name}>>.{variable_name}",
-        f"{varset_name}.{variable_name}",
-    ]
-    internal_var_re = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(variable_name)}(?![A-Za-z0-9_])")
-    return patterns, internal_var_re
-
-
-def _matches_varset_expression(
-    *,
-    expr_text: object,
-    patterns: list[str],
-    internal_var_re: re.Pattern[str] | None,
-    obj: object,
-    varset_name: str,
-) -> bool:
-    text = str(expr_text)
-    if any(p in text for p in patterns):
-        return True
-    return _matches_internal_var_ref(
-        internal_var_re=internal_var_re,
-        obj=obj,
-        varset_name=varset_name,
-        text=text,
-    )
-
-
-def _matches_internal_var_ref(
-    *,
-    internal_var_re: re.Pattern[str] | None,
-    obj: object,
-    varset_name: str,
-    text: str,
-) -> bool:
-    if internal_var_re is None:
-        return False
-    if getattr(obj, "TypeId", None) != "App::VarSet":
-        return False
-    if getattr(obj, "Name", None) != varset_name:
-        return False
-    return internal_var_re.search(text) is not None
-
-
-def _iter_varset_objects(doc: object) -> Iterator[object]:
-    for obj in iter_document_objects(doc):
-        if getattr(obj, "TypeId", None) == "App::VarSet":
-            yield obj
+    scope: DocumentScope | None,
+    ctx: FreeCadContext | None,
+    scanner: DocumentScanner | None,
+) -> list[ScanTarget]:
+    return _scanner(ctx, scanner).resolve(scope or DocumentScope.empty())
 
 
 def getVarsets(
     *,
     exclude_copy_on_change: bool = False,
     ctx: FreeCadContext | None = None,
+    scope: DocumentScope | None = None,
+    scanner: DocumentScanner | None = None,
 ) -> Iterator[str]:
-    """Yield VarSet object names from the active document.
+    """Yield VarSet names from the active document.
 
     Args:
         exclude_copy_on_change: When true, filters out VarSets that are created
             by FreeCAD's copy-on-change mechanism.
+        ctx: Optional FreeCAD runtime context.
+        scope: Ignored here (present for call-site symmetry); VarSets are
+            listed from the active document only.
+        scanner: Optional scanner instance (provides the closed-file cache).
 
     Yields:
-        The `Name` of each `App::VarSet` object.
+        The `Name` of each `App::VarSet` object in the active document.
     """
-    doc = get_port(ctx).get_active_document()
-    if doc is None:
+    _ = scope
+    target = _scanner(ctx, scanner).active_target()
+    if target is None:
         return
 
-    excluded: set[str] = (
-        get_copy_on_change_names(doc=doc, type_id="App::VarSet")
-        if exclude_copy_on_change
-        else set()
-    )
-    yield from _iter_filtered_varset_names(
-        doc=doc,
-        excluded=excluded,
-        exclude_copy_on_change=exclude_copy_on_change,
-    )
-
-
-def _is_excluded_varset_property(prop: object) -> bool:
-    excluded = {
-        "ExpressionEngine",
-        "Label",
-        "Label2",
-        "Visibility",
-        "Placement",
-        "Group",
-        "Material",
-        "Proxy",
-        "Shape",
-        "State",
-        "ViewObject",
-    }
-    return str(prop) in excluded
-
-
-def _collect_varset_variable_names(varset: object) -> list[str]:
-    names: list[str] = []
-    for prop in getattr(varset, "PropertiesList", []):
-        if _is_excluded_varset_property(prop):
+    excluded = _excluded_copy_on_change_names(target) if exclude_copy_on_change else set()
+    for varset in target.varsets:
+        if exclude_copy_on_change and varset.name in excluded:
             continue
-        names.append(str(prop))
-    names.sort()
-    return names
+        yield varset.name
 
 
-def _get_varset_property_group(varset: object, prop: str) -> str:
-    get_group = getattr(varset, "getGroupOfProperty", None)
-    if not callable(get_group):
-        return "Base"
-    try:
-        group = str(get_group(prop) or "").strip()
-    except Exception:  # pylint: disable=broad-exception-caught
-        return "Base"
-    return group or "Base"
+def _excluded_copy_on_change_names(target: ScanTarget) -> set[str]:
+    if target.document is None:
+        return set()
+    return get_copy_on_change_names(doc=target.document, type_id="App::VarSet")
+
+
+def find_varset(
+    varset_spec: str,
+    *,
+    scope: DocumentScope | None = None,
+    ctx: FreeCadContext | None = None,
+    scanner: DocumentScanner | None = None,
+    targets: list[ScanTarget] | None = None,
+) -> tuple[ScanTarget, ScanVarSet] | None:
+    """Resolve a (optionally qualified) varset name to target and data.
+
+    Resolution prefers the active document, so a name that exists in several
+    documents binds to the one the user is looking at. Qualified specs
+    (``Document#VarSet``) resolve against the named document.
+
+    Returns:
+        ``(target, varset)`` or ``None`` when the varset cannot be found.
+    """
+    doc_id, varset_name = split_parent_name(varset_spec)
+    scanner_impl = _scanner(ctx, scanner)
+
+    if doc_id is None:
+        active = scanner_impl.active_target()
+        if active is not None:
+            found = _varset_in(active, varset_name)
+            if found is not None:
+                return active, found
+
+    if targets is None:
+        targets = scanner_impl.resolve(scope or DocumentScope.empty())
+    for target in targets:
+        if doc_id is not None and target.doc_id != doc_id:
+            continue
+        found = _varset_in(target, varset_name)
+        if found is not None:
+            return target, found
+    return None
+
+
+def _varset_in(target: ScanTarget, varset_name: str) -> ScanVarSet | None:
+    for varset in target.varsets:
+        if varset.name == varset_name:
+            return varset
+    return None
 
 
 def getVarsetVariableGroups(
-    varset_name: str,
+    varset_spec: str,
     *,
     ctx: FreeCadContext | None = None,
+    scope: DocumentScope | None = None,
+    scanner: DocumentScanner | None = None,
 ) -> dict[str, str]:
-    """Return mapping of variable/property name -> group for a VarSet.
-
-    FreeCAD VarSet variables are stored as properties and may be organized into
-    groups (property group). When no group is defined, FreeCAD uses "Base".
-    """
-
-    doc = get_port(ctx).get_active_document()
-    if doc is None:
+    """Return mapping of variable/property name -> group for a VarSet."""
+    resolved = find_varset(varset_spec, ctx=ctx, scope=scope, scanner=scanner)
+    if resolved is None:
         return {}
-
-    varset = get_port(ctx).get_typed_object(doc, varset_name, type_id="App::VarSet")
-    if varset is None:
-        return {}
-
-    groups: dict[str, str] = {}
-    for prop in getattr(varset, "PropertiesList", []):
-        if _is_excluded_varset_property(prop):
-            continue
-        name = str(prop)
-        groups[name] = _get_varset_property_group(varset, name)
-    return groups
-
-
-def getVarsetVariableNamesForGroup(
-    varset_name: str,
-    group_name: str | None,
-    *,
-    ctx: FreeCadContext | None = None,
-) -> list[str]:
-    """Return variable/property names defined on a VarSet, optionally filtered by group."""
-
-    names = getVarsetVariableNames(varset_name, ctx=ctx)
-    if not group_name:
-        return names
-
-    wanted = group_name.strip() or "Base"
-    groups = getVarsetVariableGroups(varset_name, ctx=ctx)
-    filtered = [n for n in names if groups.get(n, "Base") == wanted]
-    filtered.sort()
-    return filtered
+    _target, varset = resolved
+    return dict(varset.variables)
 
 
 def getVarsetVariableNames(
-    varset_name: str,
+    varset_spec: str,
     *,
     ctx: FreeCadContext | None = None,
+    scope: DocumentScope | None = None,
+    scanner: DocumentScanner | None = None,
 ) -> list[str]:
-    """Return variable/property names defined on a VarSet.
+    """Return sorted variable/property names defined on a VarSet.
 
-    Args:
-        varset_name: Name of the `App::VarSet` object.
-
-    Returns:
-        Sorted list of variable/property names. Built-in FreeCAD properties
-        (Label, Placement, etc.) are excluded.
+    Built-in FreeCAD properties (Label, Placement, etc.) are excluded.
     """
-    doc = get_port(ctx).get_active_document()
-    if doc is None:
-        return []
+    groups = getVarsetVariableGroups(varset_spec, ctx=ctx, scope=scope, scanner=scanner)
+    return sorted(groups)
 
-    varset = get_port(ctx).get_typed_object(doc, varset_name, type_id="App::VarSet")
-    if varset is None:
-        return []
 
-    return _collect_varset_variable_names(varset)
+def getVarsetVariableNamesForGroup(
+    varset_spec: str,
+    group_name: str | None,
+    *,
+    ctx: FreeCadContext | None = None,
+    scope: DocumentScope | None = None,
+    scanner: DocumentScanner | None = None,
+) -> list[str]:
+    """Return variable names on a VarSet, optionally filtered by group."""
+    groups = getVarsetVariableGroups(varset_spec, ctx=ctx, scope=scope, scanner=scanner)
+    if not group_name:
+        return sorted(groups)
+    wanted = group_name.strip() or "Base"
+    return sorted(n for n in groups if groups.get(n, "Base") == wanted)
 
 
 def getVarsetReferences(
-    varset_name: str,
+    varset_spec: str,
     variable_name: str | None = None,
     *,
     ctx: FreeCadContext | None = None,
-) -> dict[str, str]:
-    """Find expression engine entries that reference a VarSet or variable.
+    scope: DocumentScope | None = None,
+    scanner: DocumentScanner | None = None,
+) -> list[ReferenceHit]:
+    """Find expressions (and cells) referencing a VarSet or one variable.
+
+    Searches the entire reference set: all open documents plus the scope's
+    closed files. Same-document references match ``VarSet.var`` /
+    ``<<Label>>.var`` (plus bare sibling names inside the VarSet's own
+    expressions); references from other documents must use FreeCAD's
+    cross-document ``Document#VarSet.var`` syntax (name or label spellings).
 
     Args:
-        varset_name: VarSet name.
+        varset_spec: VarSet name, optionally ``Document#``-qualified.
         variable_name: Optional variable name to scope matches. When omitted,
-            all expressions containing `<<VarSet>>` are considered.
+            any expression referencing the VarSet counts.
 
     Returns:
-        Mapping of ``"Object.Property"`` -> expression string.
+        List of :class:`ReferenceHit` records, owner document first.
     """
-    doc = get_port(ctx).get_active_document()
-    if doc is None:
-        return {}
+    targets = _search_targets(scope=scope, ctx=ctx, scanner=scanner)
+    resolved = find_varset(varset_spec, ctx=ctx, scope=scope, scanner=scanner, targets=targets)
+    if resolved is None:
+        return []
+    owner_target, varset = resolved
 
-    patterns, internal_var_re = _build_varset_search(
-        varset_name=varset_name,
-        variable_name=variable_name,
+    target = ReferenceTarget(
+        doc_id=owner_target.doc_id,
+        doc_label=owner_target.label,
+        object_name=varset.name,
+        object_label=varset.label,
+        child=variable_name,
     )
 
-    results: dict[str, str] = {}
-    port = get_port(ctx)
-    for obj_name, lhs, expr_text in iter_named_expression_engine_entries(doc):
-        if not _matches_varset_expression(
-            expr_text=expr_text,
-            patterns=patterns,
-            internal_var_re=internal_var_re,
-            obj=port.get_typed_object(doc, obj_name, type_id="App::VarSet") or object(),
-            varset_name=varset_name,
-        ):
+    hits: list[ReferenceHit] = []
+    for scan_target in targets:
+        for entry in scan_target.entries:
+            if entry_matches_target(entry, target):
+                hits.append(_hit_from_entry(scan_target, entry, owner_doc_id=target.doc_id))
+
+    return _dedupe_sorted(hits, owner_doc_id=target.doc_id)
+
+
+def _dedupe_sorted(hits: list[ReferenceHit], *, owner_doc_id: str) -> list[ReferenceHit]:
+    """Owner-document hits first, then the rest; stable and duplicate-free."""
+    hits.sort(key=lambda hit: (0 if hit.doc_id == owner_doc_id else 1, hit.lhs, hit.rhs))
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[ReferenceHit] = []
+    for hit in hits:
+        key = (hit.doc_id, hit.lhs, hit.rhs)
+        if key in seen:
             continue
-        key = build_expression_key(obj_name=obj_name, lhs=lhs)
-        results[key] = str(expr_text)
-    return results
+        seen.add(key)
+        unique.append(hit)
+    return unique
+
+
+def _hit_from_entry(
+    scan_target: ScanTarget, entry: ExpressionEntry, *, owner_doc_id: str
+) -> ReferenceHit:
+    return ReferenceHit(
+        doc_id=scan_target.doc_id,
+        doc_label=scan_target.label,
+        owner_doc_id=owner_doc_id,
+        source=SOURCE_OPEN if scan_target.is_open else SOURCE_FILE,
+        file_path=scan_target.file_path,
+        object_name=entry.object_name,
+        lhs=entry.binding_key(),
+        rhs=entry.rhs,
+    )

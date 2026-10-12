@@ -33,8 +33,12 @@ class ConsoleLike(Protocol):
 
 
 class DocumentLike(Protocol):
-    """Minimal Protocol for the FreeCAD active document."""
+    """Minimal Protocol for a loaded FreeCAD document."""
 
+    Name: str
+    Label: str
+    FileName: str
+    Temporary: bool
     Objects: list[object]
 
     def getObject(self, name: str) -> object | None:
@@ -48,6 +52,22 @@ class AppLike(Protocol):
     ActiveDocument: DocumentLike | None
     Qt: QtLike
     Console: ConsoleLike
+
+    def listDocuments(self) -> dict[str, DocumentLike]:
+        """Return all loaded documents keyed by name."""
+        ...
+
+    def getDocument(self, name: str) -> DocumentLike:
+        """Return a loaded document by name, raising when absent."""
+        ...
+
+    def openDocument(self, path: str) -> DocumentLike:
+        """Load a document file and return the opened document."""
+        ...
+
+    def setActiveDocument(self, name: str) -> None:
+        """Activate a loaded document by name."""
+        ...
 
 
 class GuiLike(Protocol):

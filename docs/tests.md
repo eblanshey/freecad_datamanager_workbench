@@ -1,7 +1,7 @@
 # Test Documentation
 
-> **Auto-generated** on 2026-01-15 10:37:26
-> **Total Tests**: 36
+> **Auto-generated** on 2026-03-12 14:19:57
+> **Total Tests**: 37
 
 This page provides a comprehensive overview of all tests in the project, automatically extracted from test docstrings.
 
@@ -27,6 +27,7 @@ This page provides a comprehensive overview of all tests in the project, automat
 | (module) | `test_get_show_plan_with_existing_subwindow_reuses` | get_show_plan reuses an existing MDI subwindow when present. |
 | (module) | `test_get_show_plan_with_mdi_creates_subwindow` | get_show_plan creates a new MDI subwindow when MDI is available and none exists. |
 | (module) | `test_get_show_plan_without_mdi_shows_standalone` | get_show_plan chooses standalone display when MDI is not available. |
+| (module) | `test_get_spreadsheet_alias_references_does_not_match_other_spreadsheet_prefix` | getSpreadsheetAliasReferences should not match CopyOnChange clones like Params001 when querying Params. |
 | (module) | `test_get_varset_expressions_state_formats_expression_with_label` | get_varset_expressions_state formats expression items using labels when enabled. |
 | (module) | `test_get_varset_variables_state_formats_parent_child_with_label` | get_varset_variables_state formats parent.child refs using labels when enabled. |
 | (module) | `test_get_varsets_state_filters_on_label_in_label_mode` | get_varsets_state applies filter against display text when label mode is enabled. |

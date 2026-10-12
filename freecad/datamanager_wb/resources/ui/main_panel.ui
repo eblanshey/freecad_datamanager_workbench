@@ -13,7 +13,7 @@
   <property name="windowTitle">
    <string>Form</string>
   </property>
-  <layout class="QHBoxLayout" name="horizontalLayout">
+  <layout class="QVBoxLayout" name="verticalLayoutRoot">
    <property name="sizeConstraint">
     <enum>QLayout::SizeConstraint::SetDefaultConstraint</enum>
    </property>
@@ -29,6 +29,37 @@
    <property name="bottomMargin">
     <number>10</number>
    </property>
+   <item>
+    <layout class="QHBoxLayout" name="scopeRowLayout">
+     <item>
+      <widget class="QLabel" name="scopeLabel">
+       <property name="text">
+        <string>Reference search:</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="referenceFilesPushButton">
+       <property name="text">
+        <string>Add closed documents…</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="scopeRowSpacer">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
    <item>
     <widget class="QTabWidget" name="tabWidget">
      <property name="currentIndex">
